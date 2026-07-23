@@ -1,0 +1,216 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+const DEFAULT_TIMEOUT_MS = 60_000;
+const MAX_OUTPUT_BYTES = 1024 * 1024;
+const EMAIL_ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const TOTP_CODE = /^\d{6,10}$/;
+
+export class ProtonPassCliError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ProtonPassCliError";
+  }
+}
+
+function configuredTimeout(env) {
+  const value = Number.parseInt(env.PROTONPASS_TIMEOUT_MS ?? "", 10);
+  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_TIMEOUT_MS;
+}
+
+export async function runPassCli(args, options = {}) {
+  const env = options.env ?? process.env;
+  const cliPath = options.cliPath ?? env.PROTONPASS_CLI_PATH ?? "pass-cli";
+  const timeout = options.timeoutMs ?? configuredTimeout(env);
+
+  try {
+    const result = await execFileAsync(cliPath, args, {
+      encoding: "utf8",
+      env,
+      maxBuffer: MAX_OUTPUT_BYTES,
+      timeout,
+      windowsHide: true,
+    });
+
+    return {
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+    };
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new ProtonPassCliError(
+        "Could not find Proton Pass CLI. Install it or set PROTONPASS_CLI_PATH.",
+      );
+    }
+
+    if (error?.killed || error?.signal === "SIGTERM") {
+      throw new ProtonPassCliError(`Proton Pass CLI timed out after ${timeout} ms.`);
+    }
+
+    throw new ProtonPassCliError(
+      "Proton Pass CLI failed. Run `pass-cli test` to check the authenticated session.",
+    );
+  }
+}
+
+function vaultArgs({ vaultName, shareId }) {
+  if (vaultName && shareId) {
+    throw new ProtonPassCliError("Provide either vaultName or shareId, not both.");
+  }
+
+  if (shareId) return ["--share-id", shareId];
+  if (vaultName) return ["--vault-name", vaultName];
+  return [];
+}
+
+export function buildCreateAliasArgs(input) {
+  return [
+    "item",
+    "alias",
+    "create",
+    ...vaultArgs(input),
+    "--prefix",
+    input.prefix,
+    "--output",
+    "json",
+  ];
+}
+
+export function buildCreateLoginArgs(input) {
+  const args = ["item", "create", "login", ...vaultArgs(input), "--title", input.title];
+
+  if (input.username) args.push("--username", input.username);
+  if (input.email) args.push("--email", input.email);
+  for (const url of input.urls ?? []) args.push("--url", url);
+
+  const length = input.passwordLength ?? 24;
+  const uppercase = input.includeUppercase ?? true;
+  const symbols = input.includeSymbols ?? true;
+  args.push(`--generate-password=${length},${uppercase},${symbols}`);
+
+  return args;
+}
+
+export function buildGetTotpArgs(input) {
+  const args = ["item", "totp"];
+
+  if (input.uri) {
+    args.push(input.uri);
+  } else {
+    args.push(...vaultArgs(input));
+    if (input.itemId) args.push("--item-id", input.itemId);
+    if (input.itemTitle) args.push("--item-title", input.itemTitle);
+  }
+
+  if (input.field) args.push("--field", input.field);
+  args.push("--output", "json");
+
+  return args;
+}
+
+export function parseAliasAddress(stdout) {
+  const output = stdout.trim();
+  if (!output) return undefined;
+
+  try {
+    const response = JSON.parse(output);
+    if (
+      response &&
+      typeof response === "object" &&
+      !Array.isArray(response) &&
+      typeof response.alias === "string"
+    ) {
+      const alias = response.alias.trim();
+      return EMAIL_ADDRESS.test(alias) ? alias : undefined;
+    }
+  } catch {
+    // The command was explicitly asked for JSON; unknown output is unsafe to infer.
+  }
+
+  return undefined;
+}
+
+export function parseTotpCodes(stdout) {
+  const output = stdout.trim();
+  if (!output) {
+    throw new ProtonPassCliError("Proton Pass CLI returned no TOTP codes for this item.");
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    throw new ProtonPassCliError("Could not parse the Proton Pass CLI TOTP response.");
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ProtonPassCliError("Proton Pass CLI returned an unexpected TOTP response.");
+  }
+
+  const entries = Object.entries(parsed);
+  if (entries.length === 0) {
+    throw new ProtonPassCliError("Proton Pass CLI returned no TOTP codes for this item.");
+  }
+
+  return entries.map(([name, value]) => {
+    const code = typeof value === "string" ? value.trim() : "";
+    if (!name.trim() || !TOTP_CODE.test(code)) {
+      throw new ProtonPassCliError("Proton Pass CLI returned an unexpected TOTP response.");
+    }
+
+    return { name, code };
+  });
+}
+
+function vaultResult(input) {
+  if (input.vaultName) return { vaultName: input.vaultName };
+  if (input.shareId) return { shareId: input.shareId };
+  return {};
+}
+
+export async function createAlias(input, options = {}) {
+  const runner = options.runner ?? runPassCli;
+  const { stdout } = await runner(buildCreateAliasArgs(input), options);
+  const alias = parseAliasAddress(stdout);
+
+  return {
+    created: true,
+    alias: alias ?? null,
+    prefix: input.prefix,
+    ...vaultResult(input),
+    ...(alias
+      ? {}
+      : {
+          warning:
+            "The alias was created, but its address could not be parsed from the CLI response.",
+        }),
+  };
+}
+
+export async function createLogin(input, options = {}) {
+  const runner = options.runner ?? runPassCli;
+  await runner(buildCreateLoginArgs(input), options);
+
+  return {
+    created: true,
+    title: input.title,
+    passwordGenerated: true,
+    passwordLength: input.passwordLength ?? 24,
+    ...vaultResult(input),
+  };
+}
+
+export async function getTotp(input, options = {}) {
+  const runner = options.runner ?? runPassCli;
+  const { stdout } = await runner(buildGetTotpArgs(input), options);
+
+  return {
+    codes: parseTotpCodes(stdout),
+    ...(input.uri ? { uri: input.uri } : {}),
+    ...(input.itemId ? { itemId: input.itemId } : {}),
+    ...(input.itemTitle ? { itemTitle: input.itemTitle } : {}),
+    ...(input.field ? { field: input.field } : {}),
+    ...vaultResult(input),
+  };
+}

@@ -1,0 +1,40 @@
+{
+  "name": "protonpass-cli-mcp",
+  "version": "0.2.0",
+  "private": true,
+  "description": "An MCP server for Proton Pass aliases, generated-password logins, and TOTP codes.",
+  "bin": {
+    "protonpass-mcp": "./src/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "vp test --run",
+    "check": "node --check src/index.js && node --check src/protonpass.js",
+    "prepare": "vp config"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@latest",
+    "vite-plus": "latest"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@latest",
+    "vitest": "4.1.9"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "bun",
+      "version": "1.3.14",
+      "onFail": "error"
+    }
+  },
+  "engines": {
+    "bun": ">=1.3.14",
+    "node": ">=20"
+  },
+  "packageManager": "bun@1.3.14"
+}

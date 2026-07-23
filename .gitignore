@@ -1,0 +1,36 @@
+.DS_Store
+node_modules/
+dist/
+coverage/
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.npmrc
+.yarnrc
+.netrc
+*.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials*.json
+secrets*.json
+
+# Local application state
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.tgz
+
+# Editor and agent-local state
+*.swp
+*.swo
+*~
+.codex/
+.claude/settings.local.json
