@@ -145,20 +145,48 @@ export async function requestSimpleLogin(path, request = {}, options = {}) {
   }
 }
 
-function findExactAlias(response, alias) {
+function parseAliases(response) {
   if (!Array.isArray(response.aliases)) {
     throw new SimpleLoginApiError("SimpleLogin API returned an unexpected alias response.");
   }
 
-  const normalizedAlias = alias.toLowerCase();
-  return response.aliases.find(
-    (candidate) =>
+  return response.aliases.map((candidate) => {
+    const alias =
+      candidate && typeof candidate === "object" && typeof candidate.email === "string"
+        ? candidate.email.trim()
+        : "";
+    const name =
       candidate &&
       typeof candidate === "object" &&
-      typeof candidate.email === "string" &&
-      candidate.email.toLowerCase() === normalizedAlias &&
-      Number.isSafeInteger(candidate.id) &&
-      candidate.id > 0,
+      (candidate.name === null || candidate.name === undefined)
+        ? null
+        : candidate?.name;
+
+    if (
+      !candidate ||
+      typeof candidate !== "object" ||
+      !EMAIL_ADDRESS.test(alias) ||
+      !Number.isSafeInteger(candidate.id) ||
+      candidate.id <= 0 ||
+      typeof candidate.enabled !== "boolean" ||
+      (name !== null && typeof name !== "string")
+    ) {
+      throw new SimpleLoginApiError("SimpleLogin API returned an unexpected alias response.");
+    }
+
+    return {
+      id: candidate.id,
+      alias,
+      name,
+      enabled: candidate.enabled,
+    };
+  });
+}
+
+function findExactAlias(response, alias) {
+  const normalizedAlias = alias.toLowerCase();
+  return parseAliases(response).find(
+    (candidate) => candidate.alias.toLowerCase() === normalizedAlias,
   );
 }
 
@@ -176,7 +204,25 @@ function parseCreatedContact(response) {
   };
 }
 
-export async function createAliasContact(input, options = {}) {
+export async function searchAliases(input, options = {}) {
+  const page = input.page ?? 0;
+  const response = await requestSimpleLogin(
+    `/api/v2/aliases?page_id=${encodeURIComponent(page)}`,
+    {
+      method: "POST",
+      body: { query: input.query },
+    },
+    options,
+  );
+
+  return {
+    query: input.query,
+    page,
+    aliases: parseAliases(response).map(({ id: _id, ...alias }) => alias),
+  };
+}
+
+export async function getOrCreateAliasContact(input, options = {}) {
   const aliasResponse = await requestSimpleLogin(
     "/api/v2/aliases?page_id=0",
     {

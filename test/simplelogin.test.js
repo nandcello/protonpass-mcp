@@ -2,14 +2,88 @@ import assert from "node:assert/strict";
 import { test } from "vite-plus/test";
 import {
   SimpleLoginApiError,
-  createAliasContact,
+  getOrCreateAliasContact,
   requestSimpleLogin,
+  searchAliases,
   verifySimpleLoginApi,
 } from "../src/simplelogin.js";
 
-test("createAliasContact finds the exact alias and creates a contact", async () => {
+test("searchAliases returns a safe page of matching aliases", async () => {
   const calls = [];
-  const result = await createAliasContact(
+  const result = await searchAliases(
+    { query: "shop", page: 2 },
+    {
+      apiKey: "secret-api-key",
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(
+          JSON.stringify({
+            aliases: [
+              {
+                id: 11,
+                email: "shopping@example.com",
+                name: "Shopping",
+                enabled: true,
+                mailbox: { email: "private@example.org", id: 9 },
+                note: "Private note",
+              },
+              {
+                id: 12,
+                email: "old-shopping@example.com",
+                name: null,
+                enabled: false,
+              },
+            ],
+          }),
+        );
+      },
+    },
+  );
+
+  assert.deepEqual(result, {
+    query: "shop",
+    page: 2,
+    aliases: [
+      {
+        alias: "shopping@example.com",
+        name: "Shopping",
+        enabled: true,
+      },
+      {
+        alias: "old-shopping@example.com",
+        name: null,
+        enabled: false,
+      },
+    ],
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://app.simplelogin.io/api/v2/aliases?page_id=2");
+  assert.equal(calls[0].init.headers.Authentication, "secret-api-key");
+  assert.equal(calls[0].init.redirect, "error");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { query: "shop" });
+});
+
+test("searchAliases rejects malformed alias results", async () => {
+  await assert.rejects(
+    searchAliases(
+      { query: "shop" },
+      {
+        apiKey: "secret-api-key",
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              aliases: [{ id: 11, email: "shopping@example.com", enabled: "yes" }],
+            }),
+          ),
+      },
+    ),
+    /unexpected alias response/,
+  );
+});
+
+test("getOrCreateAliasContact finds the exact alias and creates a contact", async () => {
+  const calls = [];
+  const result = await getOrCreateAliasContact(
     {
       alias: "shopping@example.com",
       contact: "merchant@example.org",
@@ -22,8 +96,8 @@ test("createAliasContact finds the exact alias and creates a contact", async () 
           return new Response(
             JSON.stringify({
               aliases: [
-                { id: 10, email: "other@example.com" },
-                { id: 11, email: "shopping@example.com" },
+                { id: 10, email: "other@example.com", enabled: true },
+                { id: 11, email: "shopping@example.com", enabled: true },
               ],
             }),
           );
@@ -63,9 +137,9 @@ test("createAliasContact finds the exact alias and creates a contact", async () 
   });
 });
 
-test("createAliasContact reports an existing contact as idempotent", async () => {
+test("getOrCreateAliasContact reports an existing contact as idempotent", async () => {
   let call = 0;
-  const result = await createAliasContact(
+  const result = await getOrCreateAliasContact(
     {
       alias: "shopping@example.com",
       contact: "merchant@example.org",
@@ -77,7 +151,7 @@ test("createAliasContact reports an existing contact as idempotent", async () =>
         return call === 1
           ? new Response(
               JSON.stringify({
-                aliases: [{ id: 11, email: "shopping@example.com" }],
+                aliases: [{ id: 11, email: "shopping@example.com", enabled: true }],
               }),
             )
           : new Response(
@@ -99,10 +173,10 @@ test("createAliasContact reports an existing contact as idempotent", async () =>
   });
 });
 
-test("createAliasContact does not mutate when the exact alias is absent", async () => {
+test("getOrCreateAliasContact does not mutate when the exact alias is absent", async () => {
   let calls = 0;
   await assert.rejects(
-    createAliasContact(
+    getOrCreateAliasContact(
       {
         alias: "missing@example.com",
         contact: "merchant@example.org",
@@ -113,7 +187,7 @@ test("createAliasContact does not mutate when the exact alias is absent", async 
           calls += 1;
           return new Response(
             JSON.stringify({
-              aliases: [{ id: 11, email: "similar@example.com" }],
+              aliases: [{ id: 11, email: "similar@example.com", enabled: true }],
             }),
           );
         },
@@ -124,11 +198,11 @@ test("createAliasContact does not mutate when the exact alias is absent", async 
   assert.equal(calls, 1);
 });
 
-test("createAliasContact rejects a contact response without a boolean existed field", async () => {
+test("getOrCreateAliasContact rejects a contact response without a boolean existed field", async () => {
   for (const existed of [undefined, "true"]) {
     let call = 0;
     await assert.rejects(
-      createAliasContact(
+      getOrCreateAliasContact(
         {
           alias: "shopping@example.com",
           contact: "merchant@example.org",
@@ -140,7 +214,7 @@ test("createAliasContact rejects a contact response without a boolean existed fi
             return call === 1
               ? new Response(
                   JSON.stringify({
-                    aliases: [{ id: 11, email: "shopping@example.com" }],
+                    aliases: [{ id: 11, email: "shopping@example.com", enabled: true }],
                   }),
                 )
               : new Response(

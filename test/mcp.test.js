@@ -38,7 +38,14 @@ test("MCP client can list, validate, and call all tools", async () => {
     if (new URL(url).pathname === "/api/v2/aliases") {
       return new Response(
         JSON.stringify({
-          aliases: [{ id: 42, email: "github-alias@example.com" }],
+          aliases: [
+            {
+              id: 42,
+              email: "github-alias@example.com",
+              name: "GitHub",
+              enabled: true,
+            },
+          ],
         }),
       );
     }
@@ -75,10 +82,28 @@ test("MCP client can list, validate, and call all tools", async () => {
   const listed = await client.listTools();
   assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
     "create_alias",
-    "create_alias_contact",
     "create_login",
+    "get_or_create_alias_contact",
     "get_totp",
+    "search_aliases",
   ]);
+
+  const aliasSearch = await client.callTool({
+    name: "search_aliases",
+    arguments: { query: "github" },
+  });
+  assert.equal(aliasSearch.isError, undefined);
+  assert.deepEqual(aliasSearch.structuredContent, {
+    query: "github",
+    page: 0,
+    aliases: [
+      {
+        alias: "github-alias@example.com",
+        name: "GitHub",
+        enabled: true,
+      },
+    ],
+  });
 
   const alias = await client.callTool({
     name: "create_alias",
@@ -92,7 +117,7 @@ test("MCP client can list, validate, and call all tools", async () => {
   });
 
   const aliasContact = await client.callTool({
-    name: "create_alias_contact",
+    name: "get_or_create_alias_contact",
     arguments: {
       alias: "github-alias@example.com",
       contact: "support@example.org",
@@ -148,12 +173,15 @@ test("MCP client can list, validate, and call all tools", async () => {
   assert.equal(invalidTotp.isError, true);
 
   assert.equal(calls.length, 3);
-  assert.equal(simpleLoginCalls.length, 2);
+  assert.equal(simpleLoginCalls.length, 3);
   assert.equal(simpleLoginCalls[0].init.headers.Authentication, "test-api-key");
   assert.deepEqual(JSON.parse(simpleLoginCalls[0].init.body), {
-    query: "github-alias@example.com",
+    query: "github",
   });
   assert.deepEqual(JSON.parse(simpleLoginCalls[1].init.body), {
+    query: "github-alias@example.com",
+  });
+  assert.deepEqual(JSON.parse(simpleLoginCalls[2].init.body), {
     contact: "support@example.org",
   });
   assert.equal(
@@ -209,7 +237,7 @@ test("MCP tools cannot override the configured vault or use a Pass URI", async (
     arguments: { uri: "pass://other-vault/item-123" },
   });
   const apiOverride = await client.callTool({
-    name: "create_alias_contact",
+    name: "get_or_create_alias_contact",
     arguments: {
       alias: "alias@example.com",
       contact: "contact@example.org",
@@ -217,7 +245,7 @@ test("MCP tools cannot override the configured vault or use a Pass URI", async (
     },
   });
   const baseUrlOverride = await client.callTool({
-    name: "create_alias_contact",
+    name: "get_or_create_alias_contact",
     arguments: {
       alias: "alias@example.com",
       contact: "contact@example.org",
