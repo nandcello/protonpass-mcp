@@ -11,11 +11,6 @@ import * as z from "zod/v4";
 import { createAlias, createLogin, getTotp, normalizeVaultSelector } from "./protonpass.js";
 import { createAliasContact } from "./simplelogin.js";
 
-loadEnv({
-  path: resolve(dirname(fileURLToPath(import.meta.url)), "../.env"),
-  quiet: true,
-});
-
 const createAliasInput = z
   .object({
     prefix: z
@@ -252,6 +247,11 @@ export function createServer({ vaultSelector, commandOptions = {}, simpleLoginOp
 }
 
 export async function main(args = process.argv.slice(2)) {
+  loadEnv({
+    path: resolve(dirname(fileURLToPath(import.meta.url)), "../.env"),
+    quiet: true,
+  });
+
   const server = createServer({ vaultSelector: parseServerArgs(args) });
   const transport = new StdioServerTransport();
   await server.connect(transport);

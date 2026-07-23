@@ -52,10 +52,12 @@ test("createAliasContact finds the exact alias and creates a contact", async () 
   assert.equal(calls.length, 2);
   assert.equal(calls[0].url, "https://app.simplelogin.io/api/v2/aliases?page_id=0");
   assert.equal(calls[0].init.headers.Authentication, "secret-api-key");
+  assert.equal(calls[0].init.redirect, "error");
   assert.deepEqual(JSON.parse(calls[0].init.body), {
     query: "shopping@example.com",
   });
   assert.equal(calls[1].url, "https://app.simplelogin.io/api/aliases/11/contacts");
+  assert.equal(calls[1].init.redirect, "error");
   assert.deepEqual(JSON.parse(calls[1].init.body), {
     contact: "merchant@example.org",
   });
@@ -122,6 +124,39 @@ test("createAliasContact does not mutate when the exact alias is absent", async 
   assert.equal(calls, 1);
 });
 
+test("createAliasContact rejects a contact response without a boolean existed field", async () => {
+  for (const existed of [undefined, "true"]) {
+    let call = 0;
+    await assert.rejects(
+      createAliasContact(
+        {
+          alias: "shopping@example.com",
+          contact: "merchant@example.org",
+        },
+        {
+          apiKey: "secret-api-key",
+          fetchImpl: async () => {
+            call += 1;
+            return call === 1
+              ? new Response(
+                  JSON.stringify({
+                    aliases: [{ id: 11, email: "shopping@example.com" }],
+                  }),
+                )
+              : new Response(
+                  JSON.stringify({
+                    reverse_alias_address: "reply+merchant@example.net",
+                    existed,
+                  }),
+                );
+          },
+        },
+      ),
+      /unexpected contact response/,
+    );
+  }
+});
+
 test("SimpleLogin API errors do not expose API response content", async () => {
   await assert.rejects(
     requestSimpleLogin(
@@ -144,6 +179,31 @@ test("SimpleLogin API errors do not expose API response content", async () => {
       return true;
     },
   );
+});
+
+test("SimpleLogin API stops reading responses at the byte limit", async () => {
+  let cancelled = false;
+  const responseBody = new ReadableStream({
+    pull(controller) {
+      controller.enqueue(new Uint8Array(256 * 1024));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  await assert.rejects(
+    requestSimpleLogin(
+      "/api/user_info",
+      {},
+      {
+        apiKey: "secret-api-key",
+        fetchImpl: async () => new Response(responseBody),
+      },
+    ),
+    /unexpectedly large response/,
+  );
+  assert.equal(cancelled, true);
 });
 
 test("SimpleLogin API requires a key and reports rejected keys safely", async () => {

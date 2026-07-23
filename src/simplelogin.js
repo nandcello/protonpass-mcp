@@ -49,18 +49,54 @@ function apiConfiguration(options) {
   };
 }
 
-async function parseResponse(response) {
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) {
-    throw new SimpleLoginApiError("SimpleLogin API returned an unexpectedly large response.");
+async function cancelResponseBody(response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The response is already being rejected; cancellation is best-effort cleanup.
   }
+}
 
+async function readResponseText(response) {
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytesRead = 0;
+  let text = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) return text + decoder.decode();
+
+      bytesRead += value.byteLength;
+      if (bytesRead > MAX_RESPONSE_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The size error below is the actionable failure.
+        }
+        throw new SimpleLoginApiError("SimpleLogin API returned an unexpectedly large response.");
+      }
+
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function parseResponse(response) {
   if (!response.ok) {
+    await cancelResponseBody(response);
     if (response.status === 401) {
       throw new SimpleLoginApiError("SimpleLogin API key was rejected.");
     }
     throw new SimpleLoginApiError("SimpleLogin API request failed.");
   }
+
+  const text = await readResponseText(response);
 
   try {
     const parsed = JSON.parse(text);
@@ -86,6 +122,7 @@ export async function requestSimpleLogin(path, request = {}, options = {}) {
   const init = {
     method: request.method ?? "GET",
     headers,
+    redirect: "error",
     signal: controller.signal,
   };
 
@@ -129,12 +166,12 @@ function parseCreatedContact(response) {
   const reverseAlias =
     typeof response.reverse_alias_address === "string" ? response.reverse_alias_address.trim() : "";
 
-  if (!EMAIL_ADDRESS.test(reverseAlias)) {
+  if (!EMAIL_ADDRESS.test(reverseAlias) || typeof response.existed !== "boolean") {
     throw new SimpleLoginApiError("SimpleLogin API returned an unexpected contact response.");
   }
 
   return {
-    existed: response.existed === true,
+    existed: response.existed,
     reverseAlias,
   };
 }
