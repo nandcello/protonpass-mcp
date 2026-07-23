@@ -1,6 +1,6 @@
 {
   "name": "protonpass-cli-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "An MCP server for Proton Pass aliases, generated-password logins, and TOTP codes.",
   "bin": {

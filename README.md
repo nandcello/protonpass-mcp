@@ -49,7 +49,8 @@ Register the local stdio server:
 ```sh
 codex mcp add protonpass \
   --env PROTONPASS_CLI_PATH=/absolute/path/to/pass-cli \
-  -- node /absolute/path/to/protonpass-mcp/src/index.js
+  -- node /absolute/path/to/protonpass-mcp/src/index.js \
+  --share-id VAULT_SHARE_ID
 ```
 
 Alternatively, add it to `~/.codex/config.toml`:
@@ -57,7 +58,11 @@ Alternatively, add it to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.protonpass]
 command = "node"
-args = ["/absolute/path/to/protonpass-mcp/src/index.js"]
+args = [
+  "/absolute/path/to/protonpass-mcp/src/index.js",
+  "--share-id",
+  "VAULT_SHARE_ID",
+]
 
 [mcp_servers.protonpass.env]
 PROTONPASS_CLI_PATH = "/absolute/path/to/pass-cli"
@@ -66,19 +71,25 @@ PROTONPASS_CLI_PATH = "/absolute/path/to/pass-cli"
 Restart the MCP client or start a new task after changing its MCP
 configuration.
 
+Exactly one vault selector is required when the server starts:
+
+- `--share-id VAULT_SHARE_ID` selects a vault by its unique share ID and is
+  recommended.
+- `--vault-name VAULT_NAME` selects a vault by name.
+
+Find a vault's share ID with `pass-cli vault list`. The selected vault is fixed
+for the lifetime of the server. Vault selectors are not exposed as tool inputs,
+and every Proton Pass CLI command receives the configured selector.
+
 ## Tool inputs
 
 ### `create_alias`
 
 ```json
 {
-  "prefix": "github",
-  "vaultName": "Personal"
+  "prefix": "github"
 }
 ```
-
-`vaultName` and `shareId` are optional and mutually exclusive. If both are
-omitted, Proton Pass CLI's default vault is used.
 
 ### `create_login`
 
@@ -87,7 +98,6 @@ omitted, Proton Pass CLI's default vault is used.
   "title": "GitHub",
   "email": "github-alias@example.com",
   "urls": ["https://github.com"],
-  "vaultName": "Personal",
   "passwordLength": 24,
   "includeUppercase": true,
   "includeSymbols": true
@@ -100,12 +110,11 @@ does not reveal it.
 
 ### `get_totp`
 
-Select the login with exactly one of `uri`, `itemId`, or `itemTitle`:
+Select the login with exactly one of `itemId` or `itemTitle`:
 
 ```json
 {
   "itemTitle": "GitHub",
-  "vaultName": "Personal",
   "field": "Authenticator"
 }
 ```

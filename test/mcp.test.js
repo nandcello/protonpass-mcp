@@ -6,7 +6,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { onTestFinished, test } from "vite-plus/test";
-import { createServer, isEntrypoint } from "../src/index.js";
+import {
+  createServer,
+  isEntrypoint,
+  normalizeVaultSelector,
+  parseServerArgs,
+} from "../src/index.js";
 
 test("MCP client can list, validate, and call all tools", async () => {
   const calls = [];
@@ -32,7 +37,7 @@ test("MCP client can list, validate, and call all tools", async () => {
     return { stdout: "Created item", stderr: "" };
   };
 
-  const server = createServer({ commandOptions: { runner } });
+  const server = createServer({ shareId: "vault-share-123", commandOptions: { runner } });
   const client = new Client(
     { name: "protonpass-mcp-test", version: "0.2.0" },
     { capabilities: {} },
@@ -63,6 +68,7 @@ test("MCP client can list, validate, and call all tools", async () => {
     created: true,
     alias: "github-alias@example.com",
     prefix: "github",
+    shareId: "vault-share-123",
   });
 
   const login = await client.callTool({
@@ -79,20 +85,20 @@ test("MCP client can list, validate, and call all tools", async () => {
     title: "GitHub",
     passwordGenerated: true,
     passwordLength: 24,
+    shareId: "vault-share-123",
   });
 
   const totp = await client.callTool({
     name: "get_totp",
     arguments: {
       itemTitle: "GitHub",
-      vaultName: "Personal",
     },
   });
   assert.equal(totp.isError, undefined);
   assert.deepEqual(totp.structuredContent, {
     codes: [{ name: "Authenticator", code: "012345" }],
     itemTitle: "GitHub",
-    vaultName: "Personal",
+    shareId: "vault-share-123",
   });
 
   const invalidLogin = await client.callTool({
@@ -111,6 +117,74 @@ test("MCP client can list, validate, and call all tools", async () => {
   assert.equal(
     calls[1].some((value) => value === "--password"),
     false,
+  );
+  for (const args of calls) {
+    const selectorIndex = args.indexOf("--share-id");
+    assert.notEqual(selectorIndex, -1);
+    assert.equal(args[selectorIndex + 1], "vault-share-123");
+  }
+});
+
+test("MCP tools cannot override the configured vault or use a Pass URI", async () => {
+  const calls = [];
+  const server = createServer({
+    vaultName: "Personal",
+    commandOptions: {
+      runner: async (args) => {
+        calls.push(args);
+        return { stdout: JSON.stringify({ Authenticator: "012345" }), stderr: "" };
+      },
+    },
+  });
+  const client = new Client(
+    { name: "protonpass-mcp-scope-test", version: "0.2.0" },
+    { capabilities: {} },
+  );
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+  onTestFinished(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  const vaultOverride = await client.callTool({
+    name: "get_totp",
+    arguments: { itemTitle: "GitHub", shareId: "other-vault" },
+  });
+  const uriBypass = await client.callTool({
+    name: "get_totp",
+    arguments: { uri: "pass://other-vault/item-123" },
+  });
+
+  assert.equal(vaultOverride.isError, true);
+  assert.equal(uriBypass.isError, true);
+  assert.deepEqual(calls, []);
+});
+
+test("server startup requires exactly one non-empty vault selector", () => {
+  assert.deepEqual(parseServerArgs(["--share-id", " vault-share-123 "]), {
+    shareId: "vault-share-123",
+  });
+  assert.deepEqual(parseServerArgs(["--vault-name", " Personal "]), {
+    vaultName: "Personal",
+  });
+
+  for (const options of [
+    undefined,
+    {},
+    { shareId: " " },
+    { vaultName: "Personal", shareId: "vault-share-123" },
+  ]) {
+    assert.throws(() => normalizeVaultSelector(options), /exactly one/);
+  }
+
+  assert.throws(() => parseServerArgs([]), /exactly one/);
+  assert.throws(
+    () => parseServerArgs(["--vault-name", "Personal", "--share-id", "vault-share-123"]),
+    /exactly one/,
   );
 });
 
