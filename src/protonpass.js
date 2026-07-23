@@ -14,6 +14,19 @@ export class ProtonPassCliError extends Error {
   }
 }
 
+export function normalizeVaultSelector({ vaultName, shareId } = {}) {
+  const normalizedVaultName = vaultName?.trim();
+  const normalizedShareId = shareId?.trim();
+
+  if (Boolean(normalizedVaultName) === Boolean(normalizedShareId)) {
+    throw new Error("Provide exactly one of --vault-name or --share-id.");
+  }
+
+  return normalizedShareId
+    ? Object.freeze({ shareId: normalizedShareId })
+    : Object.freeze({ vaultName: normalizedVaultName });
+}
+
 function configuredTimeout(env) {
   const value = Number.parseInt(env.PROTONPASS_TIMEOUT_MS ?? "", 10);
   return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_TIMEOUT_MS;
@@ -54,22 +67,19 @@ export async function runPassCli(args, options = {}) {
   }
 }
 
-function vaultArgs({ vaultName, shareId }) {
-  if (vaultName && shareId) {
-    throw new ProtonPassCliError("Provide either vaultName or shareId, not both.");
-  }
-
-  if (shareId) return ["--share-id", shareId];
-  if (vaultName) return ["--vault-name", vaultName];
-  return [];
+function vaultArgs(vaultSelector) {
+  const normalized = normalizeVaultSelector(vaultSelector);
+  return normalized.shareId
+    ? ["--share-id", normalized.shareId]
+    : ["--vault-name", normalized.vaultName];
 }
 
-export function buildCreateAliasArgs(input) {
+export function buildCreateAliasArgs(input, vaultSelector) {
   return [
     "item",
     "alias",
     "create",
-    ...vaultArgs(input),
+    ...vaultArgs(vaultSelector),
     "--prefix",
     input.prefix,
     "--output",
@@ -77,8 +87,8 @@ export function buildCreateAliasArgs(input) {
   ];
 }
 
-export function buildCreateLoginArgs(input) {
-  const args = ["item", "create", "login", ...vaultArgs(input), "--title", input.title];
+export function buildCreateLoginArgs(input, vaultSelector) {
+  const args = ["item", "create", "login", ...vaultArgs(vaultSelector), "--title", input.title];
 
   if (input.username) args.push("--username", input.username);
   if (input.email) args.push("--email", input.email);
@@ -92,17 +102,15 @@ export function buildCreateLoginArgs(input) {
   return args;
 }
 
-export function buildGetTotpArgs(input) {
-  const args = ["item", "totp"];
-
-  if (input.uri) {
-    args.push(input.uri);
-  } else {
-    args.push(...vaultArgs(input));
-    if (input.itemId) args.push("--item-id", input.itemId);
-    if (input.itemTitle) args.push("--item-title", input.itemTitle);
+export function buildGetTotpArgs(input, vaultSelector) {
+  const selectors = [input.itemId, input.itemTitle].filter(Boolean);
+  if (selectors.length !== 1) {
+    throw new ProtonPassCliError("Provide exactly one of itemId or itemTitle.");
   }
 
+  const args = ["item", "totp", ...vaultArgs(vaultSelector)];
+  if (input.itemId) args.push("--item-id", input.itemId);
+  if (input.itemTitle) args.push("--item-title", input.itemTitle);
   if (input.field) args.push("--field", input.field);
   args.push("--output", "json");
 
@@ -163,22 +171,15 @@ export function parseTotpCodes(stdout) {
   });
 }
 
-function vaultResult(input) {
-  if (input.vaultName) return { vaultName: input.vaultName };
-  if (input.shareId) return { shareId: input.shareId };
-  return {};
-}
-
-export async function createAlias(input, options = {}) {
+export async function createAlias(input, vaultSelector, options = {}) {
   const runner = options.runner ?? runPassCli;
-  const { stdout } = await runner(buildCreateAliasArgs(input), options);
+  const { stdout } = await runner(buildCreateAliasArgs(input, vaultSelector), options);
   const alias = parseAliasAddress(stdout);
 
   return {
     created: true,
     alias: alias ?? null,
     prefix: input.prefix,
-    ...vaultResult(input),
     ...(alias
       ? {}
       : {
@@ -188,29 +189,26 @@ export async function createAlias(input, options = {}) {
   };
 }
 
-export async function createLogin(input, options = {}) {
+export async function createLogin(input, vaultSelector, options = {}) {
   const runner = options.runner ?? runPassCli;
-  await runner(buildCreateLoginArgs(input), options);
+  await runner(buildCreateLoginArgs(input, vaultSelector), options);
 
   return {
     created: true,
     title: input.title,
     passwordGenerated: true,
     passwordLength: input.passwordLength ?? 24,
-    ...vaultResult(input),
   };
 }
 
-export async function getTotp(input, options = {}) {
+export async function getTotp(input, vaultSelector, options = {}) {
   const runner = options.runner ?? runPassCli;
-  const { stdout } = await runner(buildGetTotpArgs(input), options);
+  const { stdout } = await runner(buildGetTotpArgs(input, vaultSelector), options);
 
   return {
     codes: parseTotpCodes(stdout),
-    ...(input.uri ? { uri: input.uri } : {}),
     ...(input.itemId ? { itemId: input.itemId } : {}),
     ...(input.itemTitle ? { itemTitle: input.itemTitle } : {}),
     ...(input.field ? { field: input.field } : {}),
-    ...vaultResult(input),
   };
 }

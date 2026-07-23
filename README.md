@@ -78,8 +78,9 @@ Exactly one vault selector is required when the server starts:
 - `--vault-name VAULT_NAME` selects a vault by name.
 
 Find a vault's share ID with `pass-cli vault list`. The selected vault is fixed
-for the lifetime of the server. Vault selectors are not exposed as tool inputs,
-and every Proton Pass CLI command receives the configured selector.
+for the lifetime of the server. Vault selectors are operator configuration, are
+not exposed as tool inputs or results, and are required by every Proton Pass CLI
+command.
 
 ## Tool inputs
 

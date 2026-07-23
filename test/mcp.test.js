@@ -6,12 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { onTestFinished, test } from "vite-plus/test";
-import {
-  createServer,
-  isEntrypoint,
-  normalizeVaultSelector,
-  parseServerArgs,
-} from "../src/index.js";
+import { createServer, isEntrypoint, parseServerArgs } from "../src/index.js";
+import { normalizeVaultSelector } from "../src/protonpass.js";
 
 test("MCP client can list, validate, and call all tools", async () => {
   const calls = [];
@@ -37,7 +33,10 @@ test("MCP client can list, validate, and call all tools", async () => {
     return { stdout: "Created item", stderr: "" };
   };
 
-  const server = createServer({ shareId: "vault-share-123", commandOptions: { runner } });
+  const server = createServer({
+    vaultSelector: { shareId: "vault-share-123" },
+    commandOptions: { runner },
+  });
   const client = new Client(
     { name: "protonpass-mcp-test", version: "0.2.0" },
     { capabilities: {} },
@@ -68,7 +67,6 @@ test("MCP client can list, validate, and call all tools", async () => {
     created: true,
     alias: "github-alias@example.com",
     prefix: "github",
-    shareId: "vault-share-123",
   });
 
   const login = await client.callTool({
@@ -85,7 +83,6 @@ test("MCP client can list, validate, and call all tools", async () => {
     title: "GitHub",
     passwordGenerated: true,
     passwordLength: 24,
-    shareId: "vault-share-123",
   });
 
   const totp = await client.callTool({
@@ -98,7 +95,6 @@ test("MCP client can list, validate, and call all tools", async () => {
   assert.deepEqual(totp.structuredContent, {
     codes: [{ name: "Authenticator", code: "012345" }],
     itemTitle: "GitHub",
-    shareId: "vault-share-123",
   });
 
   const invalidLogin = await client.callTool({
@@ -128,7 +124,7 @@ test("MCP client can list, validate, and call all tools", async () => {
 test("MCP tools cannot override the configured vault or use a Pass URI", async () => {
   const calls = [];
   const server = createServer({
-    vaultName: "Personal",
+    vaultSelector: { vaultName: "Personal" },
     commandOptions: {
       runner: async (args) => {
         calls.push(args);

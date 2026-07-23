@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
-import { createAlias, createLogin, getTotp } from "./protonpass.js";
+import { createAlias, createLogin, getTotp, normalizeVaultSelector } from "./protonpass.js";
 
 const createAliasInput = z
   .object({
@@ -92,8 +92,6 @@ const aliasOutput = {
   created: z.boolean(),
   alias: z.string().nullable(),
   prefix: z.string(),
-  vaultName: z.string().optional(),
-  shareId: z.string().optional(),
   warning: z.string().optional(),
 };
 
@@ -102,8 +100,6 @@ const loginOutput = {
   title: z.string(),
   passwordGenerated: z.boolean(),
   passwordLength: z.number(),
-  vaultName: z.string().optional(),
-  shareId: z.string().optional(),
 };
 
 const totpOutput = {
@@ -113,12 +109,9 @@ const totpOutput = {
       name: z.string().optional(),
     }),
   ),
-  uri: z.string().optional(),
   itemId: z.string().optional(),
   itemTitle: z.string().optional(),
   field: z.string().optional(),
-  vaultName: z.string().optional(),
-  shareId: z.string().optional(),
 };
 
 function toolResult(value) {
@@ -126,19 +119,6 @@ function toolResult(value) {
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
     structuredContent: value,
   };
-}
-
-export function normalizeVaultSelector({ vaultName, shareId } = {}) {
-  const normalizedVaultName = vaultName?.trim();
-  const normalizedShareId = shareId?.trim();
-
-  if (Boolean(normalizedVaultName) === Boolean(normalizedShareId)) {
-    throw new Error("Provide exactly one of --vault-name or --share-id.");
-  }
-
-  return normalizedShareId
-    ? Object.freeze({ shareId: normalizedShareId })
-    : Object.freeze({ vaultName: normalizedVaultName });
 }
 
 export function parseServerArgs(args) {
@@ -158,8 +138,8 @@ export function parseServerArgs(args) {
   });
 }
 
-export function createServer(options = {}) {
-  const vaultSelector = normalizeVaultSelector(options);
+export function createServer({ vaultSelector, commandOptions = {} } = {}) {
+  const normalizedVaultSelector = normalizeVaultSelector(vaultSelector);
   const server = new McpServer(
     {
       name: "protonpass-cli-mcp",
@@ -170,9 +150,6 @@ export function createServer(options = {}) {
         "This server is restricted to one vault selected by its operator. Use create_alias for a new hide-my-email address, create_login for a new login whose password is generated inside Proton Pass, and get_totp to retrieve current one-time codes without revealing their underlying secrets. The create tools add vault items and are not idempotent. Never ask for or expose a generated password or TOTP secret.",
     },
   );
-
-  const commandOptions = options.commandOptions ?? {};
-  const scopedInput = (input) => ({ ...input, ...vaultSelector });
 
   server.registerTool(
     "create_alias",
@@ -189,7 +166,7 @@ export function createServer(options = {}) {
         openWorldHint: true,
       },
     },
-    async (input) => toolResult(await createAlias(scopedInput(input), commandOptions)),
+    async (input) => toolResult(await createAlias(input, normalizedVaultSelector, commandOptions)),
   );
 
   server.registerTool(
@@ -207,7 +184,7 @@ export function createServer(options = {}) {
         openWorldHint: true,
       },
     },
-    async (input) => toolResult(await createLogin(scopedInput(input), commandOptions)),
+    async (input) => toolResult(await createLogin(input, normalizedVaultSelector, commandOptions)),
   );
 
   server.registerTool(
@@ -225,14 +202,14 @@ export function createServer(options = {}) {
         openWorldHint: true,
       },
     },
-    async (input) => toolResult(await getTotp(scopedInput(input), commandOptions)),
+    async (input) => toolResult(await getTotp(input, normalizedVaultSelector, commandOptions)),
   );
 
   return server;
 }
 
 export async function main(args = process.argv.slice(2)) {
-  const server = createServer(parseServerArgs(args));
+  const server = createServer({ vaultSelector: parseServerArgs(args) });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

@@ -14,7 +14,7 @@ import {
 } from "../src/protonpass.js";
 
 test("buildCreateAliasArgs uses JSON output and a vault name", () => {
-  assert.deepEqual(buildCreateAliasArgs({ prefix: "github", vaultName: "Personal" }), [
+  assert.deepEqual(buildCreateAliasArgs({ prefix: "github" }, { vaultName: "Personal" }), [
     "item",
     "alias",
     "create",
@@ -28,15 +28,17 @@ test("buildCreateAliasArgs uses JSON output and a vault name", () => {
 });
 
 test("buildCreateLoginArgs generates the password inside Proton Pass", () => {
-  const args = buildCreateLoginArgs({
-    title: "GitHub",
-    email: "github-alias@example.com",
-    urls: ["https://github.com"],
-    shareId: "share-123",
-    passwordLength: 32,
-    includeUppercase: false,
-    includeSymbols: true,
-  });
+  const args = buildCreateLoginArgs(
+    {
+      title: "GitHub",
+      email: "github-alias@example.com",
+      urls: ["https://github.com"],
+      passwordLength: 32,
+      includeUppercase: false,
+      includeSymbols: true,
+    },
+    { shareId: "share-123" },
+  );
 
   assert.deepEqual(args, [
     "item",
@@ -57,11 +59,13 @@ test("buildCreateLoginArgs generates the password inside Proton Pass", () => {
 
 test("buildGetTotpArgs selects an item title and requests JSON", () => {
   assert.deepEqual(
-    buildGetTotpArgs({
-      itemTitle: "GitHub",
-      vaultName: "Personal",
-      field: "Authenticator",
-    }),
+    buildGetTotpArgs(
+      {
+        itemTitle: "GitHub",
+        field: "Authenticator",
+      },
+      { vaultName: "Personal" },
+    ),
     [
       "item",
       "totp",
@@ -77,14 +81,12 @@ test("buildGetTotpArgs selects an item title and requests JSON", () => {
   );
 });
 
-test("buildGetTotpArgs accepts a Pass URI", () => {
-  assert.deepEqual(buildGetTotpArgs({ uri: "pass://share-123/item-456" }), [
-    "item",
-    "totp",
-    "pass://share-123/item-456",
-    "--output",
-    "json",
-  ]);
+test("command builders require a vault and getTotp rejects Pass URIs", () => {
+  assert.throws(() => buildCreateAliasArgs({ prefix: "github" }), /exactly one/);
+  assert.throws(
+    () => buildGetTotpArgs({ uri: "pass://other-vault/item-456" }, { shareId: "configured-vault" }),
+    /exactly one of itemId or itemTitle/,
+  );
 });
 
 test("parseAliasAddress accepts only the documented alias field", () => {
@@ -113,6 +115,7 @@ test("createAlias returns only the generated alias metadata", async () => {
   let receivedArgs;
   const result = await createAlias(
     { prefix: "example" },
+    { shareId: "share-123" },
     {
       runner: async (args) => {
         receivedArgs = args;
@@ -140,6 +143,7 @@ test("createAlias returns only the generated alias metadata", async () => {
 test("createAlias warns without inferring an address from unknown output", async () => {
   const result = await createAlias(
     { prefix: "example" },
+    { shareId: "share-123" },
     {
       runner: async () => ({
         stdout: JSON.stringify({ mailbox: "private@example.com" }),
@@ -164,6 +168,7 @@ test("createLogin never returns a generated password", async () => {
       username: "example-user",
       passwordLength: 24,
     },
+    { shareId: "share-123" },
     {
       runner: async (args) => {
         receivedArgs = args;
@@ -230,7 +235,8 @@ test("parseTotpCodes does not retain malformed private output", () => {
 test("getTotp returns only named codes", async () => {
   let receivedArgs;
   const result = await getTotp(
-    { itemId: "item-456", shareId: "share-123" },
+    { itemId: "item-456" },
+    { shareId: "share-123" },
     {
       runner: async (args) => {
         receivedArgs = args;
@@ -248,7 +254,6 @@ test("getTotp returns only named codes", async () => {
   assert.deepEqual(result, {
     codes: [{ name: "Authenticator", code: "012345" }],
     itemId: "item-456",
-    shareId: "share-123",
   });
 });
 
