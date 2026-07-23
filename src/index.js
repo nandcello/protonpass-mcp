@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 
 import { realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { config as loadEnv } from "dotenv";
 import * as z from "zod/v4";
 import { createAlias, createLogin, getTotp, normalizeVaultSelector } from "./protonpass.js";
+import { createAliasContact } from "./simplelogin.js";
+
+loadEnv({
+  path: resolve(dirname(fileURLToPath(import.meta.url)), "../.env"),
+  quiet: true,
+});
 
 const createAliasInput = z
   .object({
@@ -65,6 +73,15 @@ const createLoginInput = z
     }
   });
 
+const createAliasContactInput = z
+  .object({
+    alias: z.email().describe("Existing SimpleLogin or Proton Pass hide-my-email alias address."),
+    contact: z
+      .email()
+      .describe("External email address that the alias should be able to send mail to."),
+  })
+  .strict();
+
 const getTotpInput = z
   .object({
     itemId: z.string().trim().min(1).optional().describe("ID of the login item."),
@@ -100,6 +117,14 @@ const loginOutput = {
   title: z.string(),
   passwordGenerated: z.boolean(),
   passwordLength: z.number(),
+};
+
+const aliasContactOutput = {
+  created: z.boolean(),
+  existed: z.boolean(),
+  alias: z.string(),
+  contact: z.string(),
+  reverseAlias: z.string(),
 };
 
 const totpOutput = {
@@ -138,17 +163,35 @@ export function parseServerArgs(args) {
   });
 }
 
-export function createServer({ vaultSelector, commandOptions = {} } = {}) {
+export function createServer({ vaultSelector, commandOptions = {}, simpleLoginOptions = {} } = {}) {
   const normalizedVaultSelector = normalizeVaultSelector(vaultSelector);
   const server = new McpServer(
     {
       name: "protonpass-cli-mcp",
-      version: "0.3.0",
+      version: "0.4.0",
     },
     {
       instructions:
-        "This server is restricted to one vault selected by its operator. Use create_alias for a new hide-my-email address, create_login for a new login whose password is generated inside Proton Pass, and get_totp to retrieve current one-time codes without revealing their underlying secrets. The create tools add vault items and are not idempotent. Never ask for or expose a generated password or TOTP secret.",
+        "The Proton Pass CLI tools are restricted to one vault selected by its operator. Use create_alias for a new hide-my-email address, create_alias_contact to create an account-wide SimpleLogin reverse alias for an existing alias and contact, create_login for a new login whose password is generated inside Proton Pass, and get_totp to retrieve current one-time codes without revealing their underlying secrets. Never ask for or expose a generated password, TOTP secret, or SimpleLogin API key.",
     },
+  );
+
+  server.registerTool(
+    "create_alias_contact",
+    {
+      title: "Create alias contact",
+      description:
+        "Create a SimpleLogin contact for an existing hide-my-email alias and return the reverse-alias address used to send mail to that contact. This uses account-wide SimpleLogin access rather than the configured Proton Pass vault. Repeating the same alias and contact is safe and reports existed=true.",
+      inputSchema: createAliasContactInput,
+      outputSchema: aliasContactOutput,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (input) => toolResult(await createAliasContact(input, simpleLoginOptions)),
   );
 
   server.registerTool(

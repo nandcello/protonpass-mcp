@@ -1,8 +1,9 @@
 # Proton Pass CLI MCP
 
-A small stdio MCP server that exposes three Proton Pass actions:
+A small stdio MCP server that exposes four Proton Pass and SimpleLogin actions:
 
 - `create_alias` creates a hide-my-email alias and returns its address.
+- `create_alias_contact` creates a contact for an alias and returns its reverse-alias address.
 - `create_login` creates a login item with a password generated inside Proton Pass.
 - `get_totp` returns the current one-time code or codes for a login item.
 
@@ -19,6 +20,7 @@ Pass itself.
 - [Proton Pass CLI](https://proton.me/blog/proton-pass-cli) available as
   `pass-cli`
 - An authenticated Proton Pass CLI session
+- A SimpleLogin API key for `create_alias_contact`
 
 Authenticate before starting the MCP client:
 
@@ -26,6 +28,16 @@ Authenticate before starting the MCP client:
 pass-cli login
 pass-cli test
 ```
+
+Copy `.env.example` to `.env` and add a SimpleLogin API key:
+
+```sh
+cp .env.example .env
+```
+
+The server loads `.env` from its project directory without overriding variables
+already provided by the parent process. `.env` is ignored by Git; only
+`.env.example` is tracked.
 
 ## Install and test
 
@@ -66,6 +78,7 @@ args = [
 
 [mcp_servers.protonpass.env]
 PROTONPASS_CLI_PATH = "/absolute/path/to/pass-cli"
+SIMPLELOGIN_API_KEY = "YOUR_SIMPLELOGIN_API_KEY"
 ```
 
 Restart the MCP client or start a new task after changing its MCP
@@ -81,6 +94,11 @@ Find a vault's share ID with `pass-cli vault list`. The selected vault is fixed
 for the lifetime of the server. Vault selectors are operator configuration, are
 not exposed as tool inputs or results, and are required by every Proton Pass CLI
 command.
+
+`create_alias_contact` is the exception to vault scoping: Proton Pass CLI does
+not expose alias-contact operations, so this tool uses the account-wide
+SimpleLogin API. The API key can access aliases outside the selected Proton Pass
+vault.
 
 ## Tool inputs
 
@@ -109,6 +127,19 @@ At least one of `username` or `email` is required. The password length defaults
 to 24. The login result confirms that a password was generated but deliberately
 does not reveal it.
 
+### `create_alias_contact`
+
+```json
+{
+  "alias": "github-alias@example.com",
+  "contact": "support@example.org"
+}
+```
+
+The result includes `reverseAlias`, the address to use when sending mail from
+the alias to that contact. Creating the same contact again is safe: the result
+sets `created` to `false` and `existed` to `true`.
+
 ### `get_totp`
 
 Select the login with exactly one of `itemId` or `itemTitle`:
@@ -128,6 +159,13 @@ the underlying TOTP secret.
 
 - `PROTONPASS_CLI_PATH`: Proton Pass CLI executable; defaults to `pass-cli`.
 - `PROTONPASS_TIMEOUT_MS`: command timeout in milliseconds; defaults to 60000.
+- `SIMPLELOGIN_API_KEY`: SimpleLogin API key required by `create_alias_contact`.
+- `SIMPLELOGIN_API_BASE_URL`: API base URL; defaults to
+  `https://app.simplelogin.io` and can be changed for self-hosted SimpleLogin.
+- `SIMPLELOGIN_TIMEOUT_MS`: SimpleLogin request timeout in milliseconds;
+  defaults to 60000.
 
-The server uses direct process execution without a shell. It writes protocol
-messages only to stdout and does not log tool arguments or CLI output.
+The server invokes Proton Pass CLI directly without a shell and calls
+SimpleLogin over HTTPS (or loopback HTTP for local self-hosting). It writes
+protocol messages only to stdout and does not log tool arguments, API keys, CLI
+output, or SimpleLogin API responses.
