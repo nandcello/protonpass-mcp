@@ -224,7 +224,10 @@ Results include only the alias address, display name, and enabled state.
 ```
 
 At least one of `username` or `email` is required. The password length defaults
-to 24. The login result confirms that a password was generated but deliberately
+to 24. URLs must be `http(s)` URLs or bare domains; a bare domain such as
+`example.com/login` is saved as `https://example.com/login`. The server passes
+the generator settings to Proton Pass CLI as option names (for example
+`--generate-password=24,uppercase,symbols`), which is the format the CLI parses. The login result confirms that a password was generated but deliberately
 does not reveal it.
 
 ### `get_or_create_alias_contact`

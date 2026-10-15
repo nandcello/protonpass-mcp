@@ -459,10 +459,15 @@ test("create, alias and TOTP tools use the locked share ID, never a vault name",
     arguments: {
       title: "CAI Workday",
       email: "cai.workday@passmail.com",
-      urls: ["https://cai.wd5.myworkdayjobs.com"],
+      urls: ["cai.wd5.myworkdayjobs.com"],
     },
   });
   assert.equal(login.isError, undefined);
+  const badUrl = await client.callTool({
+    name: "create_login",
+    arguments: { title: "Bad", email: "a@b.co", urls: ["javascript:alert(1)"] },
+  });
+  assert.equal(badUrl.isError, true);
   const alias = await client.callTool({ name: "create_alias", arguments: { prefix: "agent" } });
   assert.equal(alias.isError, undefined);
   const totp = await client.callTool({ name: "get_totp", arguments: { itemTitle: "CAI Workday" } });
@@ -482,7 +487,7 @@ test("create, alias and TOTP tools use the locked share ID, never a vault name",
     "cai.workday@passmail.com",
     "--url",
     "https://cai.wd5.myworkdayjobs.com",
-    "--generate-password=24,true,true",
+    "--generate-password=24,uppercase,symbols",
   ]);
   for (const args of calls.slice(1)) {
     assert.equal(args[args.indexOf("--share-id") + 1], "agent-share");

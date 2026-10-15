@@ -7,6 +7,7 @@ const MAX_OUTPUT_BYTES = 1024 * 1024;
 const EMAIL_ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TOTP_CODE = /^\d{6,10}$/;
 const MAX_FAILURE_REASON_LENGTH = 200;
+const MAX_AGENT_REASON_LENGTH = 300;
 // pass-cli colors its tracing output; the escape character is matched on purpose.
 // oxlint-disable-next-line no-control-regex
 const ANSI_ESCAPE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
@@ -56,6 +57,44 @@ export function failureReason(stderr) {
     .replace(/pst_\S+/g, "[redacted]")
     .replace(/[A-Za-z0-9+/_=-]{32,}/g, "[redacted]")
     .slice(0, MAX_FAILURE_REASON_LENGTH);
+}
+
+/** Collapses text to one printable line within Proton's 300-character agent reason limit. */
+export function sanitizeAgentReason(text) {
+  return String(text ?? "")
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_AGENT_REASON_LENGTH);
+}
+
+/**
+ * Returns a web URL for a login, adding `https://` to a bare host such as
+ * `example.com/login`, or undefined when the value is not an http(s) URL without
+ * embedded credentials.
+ */
+export function normalizeLoginUrl(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return undefined;
+
+  const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(text) ? text : `https://${text}`;
+  try {
+    const url = new URL(candidate);
+    const isWeb = url.protocol === "https:" || url.protocol === "http:";
+    // Embedded credentials are refused; they also catch `mailto:a@b.co` read as a host.
+    return isWeb && url.hostname && !url.username && !url.password ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Builds the `--generate-password` value. pass-cli expects the length followed by the
+ * option names to enable (`24,uppercase,symbols`); positional booleans such as
+ * `24,true,true` (shown in Proton's docs) fail after login with "Unknown password option".
+ */
+export function generatePasswordSettings({ length, uppercase, symbols }) {
+  return [length, ...(uppercase ? ["uppercase"] : []), ...(symbols ? ["symbols"] : [])].join(",");
 }
 
 function configuredTimeout(env) {
@@ -127,12 +166,18 @@ export function buildCreateLoginArgs(input, vaultSelector) {
 
   if (input.username) args.push("--username", input.username);
   if (input.email) args.push("--email", input.email);
-  for (const url of input.urls ?? []) args.push("--url", url);
+  for (const value of input.urls ?? []) {
+    const url = normalizeLoginUrl(value);
+    if (!url) throw new ProtonPassCliError("Each login URL must be a web URL or domain.");
+    args.push("--url", url);
+  }
 
-  const length = input.passwordLength ?? 24;
-  const uppercase = input.includeUppercase ?? true;
-  const symbols = input.includeSymbols ?? true;
-  args.push(`--generate-password=${length},${uppercase},${symbols}`);
+  const settings = generatePasswordSettings({
+    length: input.passwordLength ?? 24,
+    uppercase: input.includeUppercase ?? true,
+    symbols: input.includeSymbols ?? true,
+  });
+  args.push(`--generate-password=${settings}`);
 
   return args;
 }
@@ -226,7 +271,15 @@ export async function createAlias(input, vaultSelector, options = {}) {
 
 export async function createLogin(input, vaultSelector, options = {}) {
   const runner = options.runner ?? runPassCli;
-  await runner(buildCreateLoginArgs(input, vaultSelector), options);
+  // pass-cli requires an agent reason for login creation in agent sessions; it is
+  // ignored for regular account sessions.
+  await runner(buildCreateLoginArgs(input, vaultSelector), {
+    ...options,
+    env: {
+      ...(options.env ?? process.env),
+      PROTON_PASS_AGENT_REASON: sanitizeAgentReason(`protonpass-mcp create login ${input.title}`),
+    },
+  });
 
   return {
     created: true,
