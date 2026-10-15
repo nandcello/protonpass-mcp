@@ -2,7 +2,7 @@
   "name": "protonpass-cli-mcp",
   "version": "0.5.0",
   "private": true,
-  "description": "An MCP server for Proton Pass aliases, alias contacts, generated-password logins, and TOTP codes.",
+  "description": "An MCP server for Proton Pass aliases, alias contacts, generated-password logins, TOTP codes, and vault-locked login credentials.",
   "bin": {
     "protonpass-mcp": "./src/index.js"
   },
@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "vp test --run",
-    "check": "node --check src/index.js && node --check src/protonpass.js && node --check src/simplelogin.js",
+    "check": "node --check src/index.js && node --check src/protonpass.js && node --check src/simplelogin.js && node --check src/credentials.js",
     "prepare": "vp config"
   },
   "dependencies": {

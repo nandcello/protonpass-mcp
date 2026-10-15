@@ -8,6 +8,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { config as loadEnv } from "dotenv";
 import * as z from "zod/v4";
+import { VaultLock, findLogins, getLoginCredentials } from "./credentials.js";
 import { createAlias, createLogin, getTotp, normalizeVaultSelector } from "./protonpass.js";
 import { getOrCreateAliasContact, searchAliases } from "./simplelogin.js";
 
@@ -116,6 +117,59 @@ const getTotpInput = z
     }
   });
 
+const findLoginsInput = z
+  .object({
+    query: z
+      .string()
+      .trim()
+      .min(1)
+      .max(255)
+      .optional()
+      .describe("Case-insensitive substring of the login title."),
+    url: z
+      .string()
+      .trim()
+      .min(1)
+      .max(2048)
+      .optional()
+      .describe(
+        "Web URL or bare domain. Matches logins whose saved URL host is this host or a parent domain of it.",
+      ),
+  })
+  .strict();
+
+const getLoginCredentialsInput = z
+  .object({
+    itemId: z.string().trim().min(1).max(256).optional().describe("ID of the login item."),
+    itemTitle: z
+      .string()
+      .trim()
+      .min(1)
+      .max(255)
+      .optional()
+      .describe("Title of the login item (case-insensitive exact match)."),
+    url: z
+      .string()
+      .trim()
+      .min(1)
+      .max(2048)
+      .optional()
+      .describe("Sign-in page URL or bare domain, matched against saved login URLs."),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const selectors = [value.itemId, value.itemTitle, value.url].filter(
+      (selector) => selector !== undefined,
+    );
+    if (selectors.length !== 1) {
+      context.addIssue({
+        code: "custom",
+        message: "Provide exactly one of itemId, itemTitle, or url.",
+        path: ["itemId"],
+      });
+    }
+  });
+
 const aliasOutput = {
   created: z.boolean(),
   alias: z.string().nullable(),
@@ -162,6 +216,27 @@ const totpOutput = {
   field: z.string().optional(),
 };
 
+const loginSummaryOutput = z.object({
+  id: z.string(),
+  title: z.string(),
+  hasUsername: z.boolean(),
+  hasEmail: z.boolean(),
+  urls: z.array(z.string()),
+});
+
+const findLoginsOutput = {
+  logins: z.array(loginSummaryOutput),
+};
+
+const loginCredentialsOutput = {
+  id: z.string(),
+  title: z.string(),
+  username: z.string().nullable(),
+  email: z.string().nullable(),
+  password: z.string(),
+  urls: z.array(z.string()),
+};
+
 function toolResult(value) {
   return {
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
@@ -186,8 +261,15 @@ export function parseServerArgs(args) {
   });
 }
 
-export function createServer({ vaultSelector, commandOptions = {}, simpleLoginOptions = {} } = {}) {
+export function createServer({
+  vaultSelector,
+  commandOptions = {},
+  credentialOptions = {},
+  simpleLoginOptions = {},
+} = {}) {
   const normalizedVaultSelector = normalizeVaultSelector(vaultSelector);
+  const vaultLock = new VaultLock(normalizedVaultSelector);
+  const credentialCommandOptions = { ...commandOptions, ...credentialOptions };
   const server = new McpServer(
     {
       name: "protonpass-cli-mcp",
@@ -195,7 +277,7 @@ export function createServer({ vaultSelector, commandOptions = {}, simpleLoginOp
     },
     {
       instructions:
-        "The Proton Pass CLI tools are restricted to one vault selected by its operator. Use search_aliases to find account-wide SimpleLogin aliases, create_alias for a new hide-my-email address, get_or_create_alias_contact to get or create an account-wide SimpleLogin reverse alias for an existing alias and contact, create_login for a new login whose password is generated inside Proton Pass, and get_totp to retrieve current one-time codes without revealing their underlying secrets. Never ask for or expose a generated password, TOTP secret, or SimpleLogin API key.",
+        "The Proton Pass CLI tools are restricted to one vault selected by its operator. Use search_aliases to find account-wide SimpleLogin aliases, create_alias for a new hide-my-email address, get_or_create_alias_contact to get or create an account-wide SimpleLogin reverse alias for an existing alias and contact, create_login for a new login whose password is generated inside Proton Pass, get_totp to retrieve current one-time codes without revealing their underlying secrets, find_logins to list sign-in metadata without secrets, and get_login_credentials to reveal a username, email, and password for one login. Credentials only ever come from the operator-configured vault; no tool input can select another vault. Every credential reveal is rate limited, audited, and requires approval. Use a revealed password only by typing it into the matching sign-in form; never repeat, summarize, or echo it to the user or into the transcript. Never ask for or expose a generated password, TOTP secret, or SimpleLogin API key.",
     },
   );
 
@@ -287,6 +369,46 @@ export function createServer({ vaultSelector, commandOptions = {}, simpleLoginOp
       },
     },
     async (input) => toolResult(await getTotp(input, normalizedVaultSelector, commandOptions)),
+  );
+
+  server.registerTool(
+    "find_logins",
+    {
+      title: "Find Proton Pass logins",
+      description:
+        "List logins in the configured vault without revealing any secret. Optionally filter by title substring (query) and/or by a web URL or domain (url), which matches saved URLs on the same host or a parent domain. Returns id, title, urls, and whether a username or email is saved.",
+      inputSchema: findLoginsInput,
+      outputSchema: findLoginsOutput,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (input) => toolResult(await findLogins(input, vaultLock, credentialCommandOptions)),
+  );
+
+  // Revealing a password does not modify the vault, but it is marked destructive (and
+  // not read-only or idempotent) on purpose: MCP clients such as Executor require human
+  // approval for tools that are not read-only, so the owner approves every reveal.
+  server.registerTool(
+    "get_login_credentials",
+    {
+      title: "Get Proton Pass login credentials",
+      description:
+        "Reveal the username, email, password, and URLs of one login in the configured vault so it can be typed into that site's sign-in form. Select it with exactly one of itemId, itemTitle, or url; a url must match exactly one saved login. Notes, TOTP secrets, passkeys, and custom fields are never returned. Every reveal requires approval, is audited, and is rate limited. Never repeat the password to the user or in the transcript.",
+      inputSchema: getLoginCredentialsInput,
+      outputSchema: loginCredentialsOutput,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (input) =>
+      toolResult(await getLoginCredentials(input, vaultLock, credentialCommandOptions)),
   );
 
   return server;
