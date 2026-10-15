@@ -83,10 +83,25 @@ test("MCP client can list, validate, and call all tools", async () => {
   assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
     "create_alias",
     "create_login",
+    "find_logins",
+    "get_login_credentials",
     "get_or_create_alias_contact",
     "get_totp",
     "search_aliases",
   ]);
+  const annotations = Object.fromEntries(listed.tools.map((tool) => [tool.name, tool.annotations]));
+  assert.deepEqual(annotations.find_logins, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  });
+  assert.deepEqual(annotations.get_login_credentials, {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
 
   const aliasSearch = await client.callTool({
     name: "search_aliases",
@@ -259,6 +274,145 @@ test("MCP tools cannot override the configured vault or use a Pass URI", async (
   assert.equal(baseUrlOverride.isError, true);
   assert.deepEqual(calls, []);
   assert.deepEqual(simpleLoginCalls, []);
+});
+
+test("MCP credential tools stay locked to the configured vault", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "protonpass-mcp-credentials-"));
+  const calls = [];
+  const item = (id, shareId) => ({
+    item: {
+      id,
+      share_id: shareId,
+      content: {
+        title: id,
+        note: "NOTE-SECRET",
+        content: {
+          Login: {
+            username: "agent",
+            email: "",
+            password: "s3cret-password",
+            urls: ["https://kalibrr.com"],
+            totp_uri: "otpauth://totp/x?secret=TOTPSECRET",
+          },
+        },
+      },
+    },
+  });
+  const server = createServer({
+    vaultSelector: { vaultName: "AGENT" },
+    credentialOptions: {
+      auditLogPath: join(directory, "audit.log"),
+      env: {},
+      runner: async (args) => {
+        calls.push(args);
+        if (args[0] === "vault") {
+          return {
+            stdout: JSON.stringify({
+              vaults: [
+                { name: "AGENT", share_id: "agent-share" },
+                { name: "Personal", share_id: "personal-share" },
+              ],
+            }),
+            stderr: "",
+          };
+        }
+        if (args[1] === "list") {
+          return {
+            stdout: JSON.stringify({
+              items: [
+                { id: "kalibrr", share_id: "agent-share", title: "kalibrr" },
+                { id: "elsewhere", share_id: "agent-share", title: "elsewhere" },
+              ],
+            }),
+            stderr: "",
+          };
+        }
+        const id = args[args.indexOf("--item-id") + 1];
+        const shareId = id === "elsewhere" ? "personal-share" : "agent-share";
+        return { stdout: JSON.stringify(item(id, shareId)), stderr: "" };
+      },
+    },
+  });
+  const client = new Client(
+    { name: "protonpass-mcp-credentials-test", version: "0.2.0" },
+    { capabilities: {} },
+  );
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+  onTestFinished(async () => {
+    await client.close();
+    await server.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  for (const { name, base } of [
+    { name: "find_logins", base: {} },
+    { name: "get_login_credentials", base: { itemId: "kalibrr" } },
+  ]) {
+    for (const override of [
+      { shareId: "personal-share" },
+      { vaultName: "Personal" },
+      { vault: "Personal" },
+    ]) {
+      const result = await client.callTool({ name, arguments: { ...base, ...override } });
+      assert.equal(result.isError, true, `${name} ${JSON.stringify(override)}`);
+    }
+  }
+  const twoSelectors = await client.callTool({
+    name: "get_login_credentials",
+    arguments: { itemId: "kalibrr", url: "kalibrr.com" },
+  });
+  assert.equal(twoSelectors.isError, true);
+  assert.deepEqual(calls, []);
+
+  const found = await client.callTool({ name: "find_logins", arguments: { query: "kalib" } });
+  assert.equal(found.isError, undefined);
+  assert.deepEqual(found.structuredContent, {
+    logins: [
+      {
+        id: "kalibrr",
+        title: "kalibrr",
+        hasUsername: true,
+        hasEmail: false,
+        urls: ["https://kalibrr.com"],
+      },
+    ],
+  });
+  assert.equal(JSON.stringify(found).includes("s3cret-password"), false);
+  assert.equal(JSON.stringify(found).includes("SECRET"), false);
+
+  // Any viewed item outside the locked share refuses the whole search.
+  const unfiltered = await client.callTool({ name: "find_logins", arguments: {} });
+  assert.equal(unfiltered.isError, true);
+  assert.equal(JSON.stringify(unfiltered).includes("s3cret-password"), false);
+
+  const mismatched = await client.callTool({
+    name: "get_login_credentials",
+    arguments: { itemId: "elsewhere" },
+  });
+  assert.equal(mismatched.isError, true);
+  assert.equal(JSON.stringify(mismatched).includes("s3cret-password"), false);
+
+  const revealed = await client.callTool({
+    name: "get_login_credentials",
+    arguments: { itemId: "kalibrr" },
+  });
+  assert.equal(revealed.isError, undefined);
+  assert.deepEqual(revealed.structuredContent, {
+    id: "kalibrr",
+    title: "kalibrr",
+    username: "agent",
+    email: null,
+    password: "s3cret-password",
+    urls: ["https://kalibrr.com"],
+  });
+
+  for (const args of calls.filter((args) => args[0] === "item")) {
+    assert.equal(args[args.indexOf("--share-id") + 1], "agent-share");
+  }
 });
 
 test("server startup requires exactly one non-empty vault selector", () => {
