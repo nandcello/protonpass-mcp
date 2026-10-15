@@ -270,6 +270,10 @@ export function createServer({
   const normalizedVaultSelector = normalizeVaultSelector(vaultSelector);
   const vaultLock = new VaultLock(normalizedVaultSelector);
   const credentialCommandOptions = { ...commandOptions, ...credentialOptions };
+  // Every Proton Pass tool uses the share ID the credential tools are locked to, so a
+  // configured --vault-name is resolved once (and refused if ambiguous) instead of being
+  // re-resolved by each CLI command.
+  const lockedVault = async () => ({ shareId: await vaultLock.shareId(credentialCommandOptions) });
   const server = new McpServer(
     {
       name: "protonpass-cli-mcp",
@@ -332,7 +336,7 @@ export function createServer({
         openWorldHint: true,
       },
     },
-    async (input) => toolResult(await createAlias(input, normalizedVaultSelector, commandOptions)),
+    async (input) => toolResult(await createAlias(input, await lockedVault(), commandOptions)),
   );
 
   server.registerTool(
@@ -350,7 +354,7 @@ export function createServer({
         openWorldHint: true,
       },
     },
-    async (input) => toolResult(await createLogin(input, normalizedVaultSelector, commandOptions)),
+    async (input) => toolResult(await createLogin(input, await lockedVault(), commandOptions)),
   );
 
   server.registerTool(
@@ -368,7 +372,7 @@ export function createServer({
         openWorldHint: true,
       },
     },
-    async (input) => toolResult(await getTotp(input, normalizedVaultSelector, commandOptions)),
+    async (input) => toolResult(await getTotp(input, await lockedVault(), commandOptions)),
   );
 
   server.registerTool(

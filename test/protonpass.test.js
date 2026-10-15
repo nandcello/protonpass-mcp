@@ -7,6 +7,7 @@ import {
   buildGetTotpArgs,
   createAlias,
   createLogin,
+  failureReason,
   getTotp,
   parseAliasAddress,
   parseTotpCodes,
@@ -276,23 +277,57 @@ test("runPassCli reports a missing executable without leaking internals", async 
   );
 });
 
-test("runPassCli never exposes CLI error output", async () => {
+test("runPassCli reports the exit code and a redacted stderr line, never stdout", async () => {
   await assert.rejects(
     runPassCli(
-      ["-e", 'process.stderr.write("private@example.com vault-private item-123"); process.exit(2)'],
+      [
+        "-e",
+        'process.stdout.write("stdout-secret-password"); process.stderr.write("Error: vault-private rejected private@example.com pst_abc::def"); process.exit(2)',
+      ],
       { cliPath: process.execPath },
     ),
     (error) => {
       assert.ok(error instanceof ProtonPassCliError);
       assert.equal(
         error.message,
-        "Proton Pass CLI failed. Run `pass-cli test` to check the authenticated session.",
+        "Proton Pass CLI failed (exit 2): Error: vault-private rejected [email] [redacted]",
       );
-      assert.equal(error.message.includes("private@example.com"), false);
+      assert.equal(error.message.includes("stdout-secret-password"), false);
       assert.equal(error.cause, undefined);
       return true;
     },
   );
+});
+
+test("runPassCli falls back to a session hint when stderr is empty", async () => {
+  await assert.rejects(
+    runPassCli(["-e", 'process.stdout.write("stdout only"); process.exit(1)'], {
+      cliPath: process.execPath,
+    }),
+    {
+      name: "ProtonPassCliError",
+      message:
+        "Proton Pass CLI failed (exit 1). Run `pass-cli info` to check the authenticated session.",
+    },
+  );
+});
+
+test("failureReason prefers the Error line over pass-cli tracing output", () => {
+  const stderr = [
+    "\u001b[2m2026-10-15T14:50:57.972255Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mpass-cli/src/main.rs\u001b[0m\u001b[2m:\u001b[0m\u001b[2m335:\u001b[0m Command is not logout there is no session",
+    "Error: This operation requires an authenticated client",
+    "",
+  ].join("\n");
+  assert.equal(failureReason(stderr), "Error: This operation requires an authenticated client");
+  assert.equal(
+    failureReason("2026-10-15T14:50:57Z ERROR pass/src/item/create.rs:88: Failed to create item\n"),
+    "Failed to create item",
+  );
+  assert.equal(failureReason(`Error: ${"word ".repeat(100)}`).length, 200);
+  assert.equal(failureReason(`Error: token ${"A1b2".repeat(10)}`), "Error: token [redacted]");
+  assert.equal(failureReason("Error: bad\u0007bell\u202eltr"), "Error: bad bell ltr");
+  assert.equal(failureReason(""), undefined);
+  assert.equal(failureReason(undefined), undefined);
 });
 
 test("runPassCli reports command timeouts", async () => {

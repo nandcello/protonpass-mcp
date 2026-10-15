@@ -6,6 +6,11 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const EMAIL_ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TOTP_CODE = /^\d{6,10}$/;
+const MAX_FAILURE_REASON_LENGTH = 200;
+// pass-cli colors its tracing output; the escape character is matched on purpose.
+// oxlint-disable-next-line no-control-regex
+const ANSI_ESCAPE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+const LOG_PREFIX = /^\d{4}-\d{2}-\d{2}T\S+\s+(?:ERROR|WARN|INFO|DEBUG|TRACE)\s+\S+:\d+:\s*/;
 
 export class ProtonPassCliError extends Error {
   constructor(message) {
@@ -25,6 +30,32 @@ export function normalizeVaultSelector({ vaultName, shareId } = {}) {
   return normalizedShareId
     ? Object.freeze({ shareId: normalizedShareId })
     : Object.freeze({ vaultName: normalizedVaultName });
+}
+
+/**
+ * Reduces CLI stderr to one short, secret-free reason. Prefers the final `Error:` line
+ * over tracing output, and redacts email addresses, access tokens and long token-like
+ * strings. Stdout is never used because it can contain item contents.
+ */
+export function failureReason(stderr) {
+  const lines = String(stderr ?? "")
+    .replace(ANSI_ESCAPE, "")
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .replace(/[\p{Cc}\p{Cf}]/gu, " ")
+        .trim()
+        .replace(LOG_PREFIX, ""),
+    )
+    .filter(Boolean);
+  const line = lines.find((candidate) => /^error\b/i.test(candidate)) ?? lines[0];
+  if (!line) return undefined;
+
+  return line
+    .replace(/[^\s@'"<>]+@[^\s@'"<>]+/g, "[email]")
+    .replace(/pst_\S+/g, "[redacted]")
+    .replace(/[A-Za-z0-9+/_=-]{32,}/g, "[redacted]")
+    .slice(0, MAX_FAILURE_REASON_LENGTH);
 }
 
 function configuredTimeout(env) {
@@ -61,8 +92,12 @@ export async function runPassCli(args, options = {}) {
       throw new ProtonPassCliError(`Proton Pass CLI timed out after ${timeout} ms.`);
     }
 
+    const exit = Number.isInteger(error?.code) ? `exit ${error.code}` : "abnormal exit";
+    const reason = failureReason(error?.stderr);
     throw new ProtonPassCliError(
-      "Proton Pass CLI failed. Run `pass-cli test` to check the authenticated session.",
+      reason
+        ? `Proton Pass CLI failed (${exit}): ${reason}`
+        : `Proton Pass CLI failed (${exit}). Run \`pass-cli info\` to check the authenticated session.`,
     );
   }
 }
