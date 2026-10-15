@@ -7,7 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { onTestFinished, test } from "vite-plus/test";
 import { createServer, isEntrypoint, parseServerArgs } from "../src/index.js";
-import { normalizeVaultSelector } from "../src/protonpass.js";
+import { ProtonPassCliError, normalizeVaultSelector } from "../src/protonpass.js";
 
 test("MCP client can list, validate, and call all tools", async () => {
   const calls = [];
@@ -413,6 +413,130 @@ test("MCP credential tools stay locked to the configured vault", async () => {
   for (const args of calls.filter((args) => args[0] === "item")) {
     assert.equal(args[args.indexOf("--share-id") + 1], "agent-share");
   }
+});
+
+test("create, alias and TOTP tools use the locked share ID, never a vault name", async () => {
+  const calls = [];
+  const runner = async (args) => {
+    calls.push(args);
+    if (args[0] === "vault") {
+      return {
+        stdout: JSON.stringify({
+          vaults: [
+            { name: "AGENT", share_id: "agent-share" },
+            { name: "Personal", share_id: "personal-share" },
+          ],
+        }),
+        stderr: "",
+      };
+    }
+    if (args.includes("totp")) return { stdout: JSON.stringify({ Main: "123456" }), stderr: "" };
+    if (args.includes("alias")) {
+      return { stdout: JSON.stringify({ alias: "agent.x@passmail.com" }), stderr: "" };
+    }
+    return { stdout: "", stderr: "" };
+  };
+  const server = createServer({
+    vaultSelector: { vaultName: "AGENT" },
+    commandOptions: { runner },
+  });
+  const client = new Client(
+    { name: "protonpass-mcp-lock-test", version: "0.2.0" },
+    { capabilities: {} },
+  );
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+  onTestFinished(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  const login = await client.callTool({
+    name: "create_login",
+    arguments: {
+      title: "CAI Workday",
+      email: "cai.workday@passmail.com",
+      urls: ["cai.wd5.myworkdayjobs.com"],
+    },
+  });
+  assert.equal(login.isError, undefined);
+  const badUrl = await client.callTool({
+    name: "create_login",
+    arguments: { title: "Bad", email: "a@b.co", urls: ["javascript:alert(1)"] },
+  });
+  assert.equal(badUrl.isError, true);
+  const alias = await client.callTool({ name: "create_alias", arguments: { prefix: "agent" } });
+  assert.equal(alias.isError, undefined);
+  const totp = await client.callTool({ name: "get_totp", arguments: { itemTitle: "CAI Workday" } });
+  assert.equal(totp.isError, undefined);
+
+  assert.deepEqual(calls[0], ["vault", "list", "--output", "json"]);
+  assert.equal(calls.filter((args) => args[0] === "vault").length, 1);
+  assert.deepEqual(calls[1], [
+    "item",
+    "create",
+    "login",
+    "--share-id",
+    "agent-share",
+    "--title",
+    "CAI Workday",
+    "--email",
+    "cai.workday@passmail.com",
+    "--url",
+    "https://cai.wd5.myworkdayjobs.com",
+    "--generate-password=24,uppercase,symbols",
+  ]);
+  for (const args of calls.slice(1)) {
+    assert.equal(args[args.indexOf("--share-id") + 1], "agent-share");
+    assert.equal(args.includes("--vault-name"), false);
+  }
+});
+
+test("create_login refuses an ambiguous vault name and surfaces safe CLI failures", async () => {
+  const calls = [];
+  let vaults = [
+    { name: "AGENT", share_id: "a" },
+    { name: "AGENT", share_id: "b" },
+  ];
+  const runner = async (args) => {
+    calls.push(args);
+    if (args[0] === "vault") return { stdout: JSON.stringify({ vaults }), stderr: "" };
+    throw new ProtonPassCliError("Proton Pass CLI failed (exit 1): Error: Failed to create item");
+  };
+  const server = createServer({
+    vaultSelector: { vaultName: "AGENT" },
+    commandOptions: { runner },
+  });
+  const client = new Client(
+    { name: "protonpass-mcp-create-test", version: "0.2.0" },
+    { capabilities: {} },
+  );
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+  onTestFinished(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  const input = { title: "BEL USA UltiPro", email: "bel.ultipro@passmail.com" };
+  const ambiguous = await client.callTool({ name: "create_login", arguments: input });
+  assert.equal(ambiguous.isError, true);
+  assert.match(ambiguous.content[0].text, /more than one vault/);
+  assert.equal(
+    calls.some((args) => args[0] === "item"),
+    false,
+  );
+
+  vaults = [{ name: "AGENT", share_id: "agent-share" }];
+  const failed = await client.callTool({ name: "create_login", arguments: input });
+  assert.equal(failed.isError, true);
+  assert.match(failed.content[0].text, /exit 1\): Error: Failed to create item/);
 });
 
 test("server startup requires exactly one non-empty vault selector", () => {

@@ -31,7 +31,7 @@ Authenticate before starting the MCP client:
 
 ```sh
 pass-cli login
-pass-cli test
+pass-cli info
 ```
 
 Copy `.env.example` to `.env` and add a SimpleLogin API key:
@@ -93,12 +93,14 @@ Exactly one vault selector is required when the server starts:
 
 - `--share-id VAULT_SHARE_ID` selects a vault by its unique share ID and is
   recommended.
-- `--vault-name VAULT_NAME` selects a vault by name.
+- `--vault-name VAULT_NAME` selects a vault by name. The name is resolved to its
+  share ID once, and the server refuses to run Proton Pass tools if it matches no
+  vault or more than one.
 
 Find a vault's share ID with `pass-cli vault list`. The selected vault is fixed
 for the lifetime of the server. Vault selectors are operator configuration, are
-not exposed as tool inputs or results, and are required by every Proton Pass CLI
-command.
+not exposed as tool inputs or results, and every Proton Pass CLI command receives
+the selected vault's `--share-id`.
 
 `search_aliases` and `get_or_create_alias_contact` are exceptions to vault
 scoping: Proton Pass CLI does not expose alias search or alias-contact
@@ -222,7 +224,10 @@ Results include only the alias address, display name, and enabled state.
 ```
 
 At least one of `username` or `email` is required. The password length defaults
-to 24. The login result confirms that a password was generated but deliberately
+to 24. URLs must be `http(s)` URLs or bare domains; a bare domain such as
+`example.com/login` is saved as `https://example.com/login`. The server passes
+the generator settings to Proton Pass CLI as option names (for example
+`--generate-password=24,uppercase,symbols`), which is the format the CLI parses. The login result confirms that a password was generated but deliberately
 does not reveal it.
 
 ### `get_or_create_alias_contact`
@@ -307,5 +312,6 @@ The server invokes Proton Pass CLI directly without a shell and calls
 SimpleLogin over HTTPS (or loopback HTTP for local self-hosting). It writes
 protocol messages only to stdout and does not log tool arguments, API keys, CLI
 output, or SimpleLogin API responses. The credential audit log records reveal
-attempts but never credential values, and error messages never include CLI
-output.
+attempts but never credential values. Error messages never include CLI stdout;
+when a Proton Pass CLI command fails, the message gives its exit code and one
+line of its stderr, with email addresses and token-like strings redacted.

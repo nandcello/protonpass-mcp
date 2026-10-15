@@ -9,7 +9,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { config as loadEnv } from "dotenv";
 import * as z from "zod/v4";
 import { VaultLock, findLogins, getLoginCredentials } from "./credentials.js";
-import { createAlias, createLogin, getTotp, normalizeVaultSelector } from "./protonpass.js";
+import {
+  createAlias,
+  createLogin,
+  getTotp,
+  normalizeLoginUrl,
+  normalizeVaultSelector,
+} from "./protonpass.js";
 import { getOrCreateAliasContact, searchAliases } from "./simplelogin.js";
 
 const createAliasInput = z
@@ -39,10 +45,21 @@ const createLoginInput = z
       .optional()
       .describe("Login email, which may be an address returned by create_alias."),
     urls: z
-      .array(z.url())
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(2048)
+          .refine((value) => normalizeLoginUrl(value) !== undefined, {
+            message: "Each URL must be an http(s) URL or a bare domain.",
+          }),
+      )
       .max(20)
       .optional()
-      .describe("One or more website URLs associated with this login."),
+      .describe(
+        "One or more website URLs associated with this login. A bare domain such as `example.com` is saved as `https://example.com`.",
+      ),
     passwordLength: z
       .int()
       .min(12)
@@ -270,6 +287,10 @@ export function createServer({
   const normalizedVaultSelector = normalizeVaultSelector(vaultSelector);
   const vaultLock = new VaultLock(normalizedVaultSelector);
   const credentialCommandOptions = { ...commandOptions, ...credentialOptions };
+  // Every Proton Pass tool uses the share ID the credential tools are locked to, so a
+  // configured --vault-name is resolved once (and refused if ambiguous) instead of being
+  // re-resolved by each CLI command.
+  const lockedVault = async () => ({ shareId: await vaultLock.shareId(credentialCommandOptions) });
   const server = new McpServer(
     {
       name: "protonpass-cli-mcp",
@@ -332,7 +353,7 @@ export function createServer({
         openWorldHint: true,
       },
     },
-    async (input) => toolResult(await createAlias(input, normalizedVaultSelector, commandOptions)),
+    async (input) => toolResult(await createAlias(input, await lockedVault(), commandOptions)),
   );
 
   server.registerTool(
@@ -350,7 +371,7 @@ export function createServer({
         openWorldHint: true,
       },
     },
-    async (input) => toolResult(await createLogin(input, normalizedVaultSelector, commandOptions)),
+    async (input) => toolResult(await createLogin(input, await lockedVault(), commandOptions)),
   );
 
   server.registerTool(
@@ -368,7 +389,7 @@ export function createServer({
         openWorldHint: true,
       },
     },
-    async (input) => toolResult(await getTotp(input, normalizedVaultSelector, commandOptions)),
+    async (input) => toolResult(await getTotp(input, await lockedVault(), commandOptions)),
   );
 
   server.registerTool(

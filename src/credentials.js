@@ -2,11 +2,15 @@ import { constants as fsConstants } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { ProtonPassCliError, normalizeVaultSelector, runPassCli } from "./protonpass.js";
+import {
+  ProtonPassCliError,
+  normalizeVaultSelector,
+  runPassCli,
+  sanitizeAgentReason,
+} from "./protonpass.js";
 
 export const DEFAULT_REVEALS_PER_HOUR = 5;
 const RATE_WINDOW_MS = 60 * 60 * 1000;
-const MAX_REASON_LENGTH = 300;
 const MAX_LOGIN_LOOKUPS = 50;
 const REASON_PREFIX = "protonpass-mcp sign-in for ";
 
@@ -47,12 +51,7 @@ function parseJson(stdout, what) {
  * interpolated, stripped of control characters and capped at Proton's 300-char limit.
  */
 export function agentReason(label) {
-  const cleaned = String(label ?? "")
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return (REASON_PREFIX + (cleaned || "saved login")).slice(0, MAX_REASON_LENGTH);
+  return sanitizeAgentReason(REASON_PREFIX + (sanitizeAgentReason(label) || "saved login"));
 }
 
 function agentOptions(options, label) {
